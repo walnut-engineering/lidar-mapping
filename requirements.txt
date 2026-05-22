@@ -1,0 +1,17 @@
+# Core runtime dependencies
+numpy>=1.24
+
+# Point cloud processing & ICP registration (required for Mapper / registration.py)
+open3d>=0.18
+
+# Optional sensor hardware (I2C on Raspberry Pi)
+smbus2>=0.4; sys_platform == "linux"
+
+# Optional serial AHRS modules
+pyserial>=3.5
+
+# Optional camera support
+opencv-python>=4.8
+
+# Testing
+pytest>=8.0

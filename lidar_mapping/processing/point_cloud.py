@@ -221,7 +221,8 @@ def estimate_normals(
             radius=radius, max_nn=max_nn
         )
     )
-    pcd.orient_normals_towards_camera_location()
+    if pcd.has_normals():
+        pcd.orient_normals_towards_camera_location()
     return pcd
 
 
