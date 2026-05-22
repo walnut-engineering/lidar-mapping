@@ -92,11 +92,6 @@ class ICPRegistration:
         relative_fitness: float = 1e-6,
         relative_rmse: float = 1e-6,
     ) -> None:
-        if not _O3D_AVAILABLE:
-            raise ImportError(
-                "open3d is required for ICP registration. "
-                "Install it with: pip install open3d"
-            )
         self._voxel = voxel_size
         self._max_corr = (
             max_correspondence_distance
@@ -127,6 +122,11 @@ class ICPRegistration:
         -------
         :class:`RegistrationResult`
         """
+        if not _O3D_AVAILABLE:
+            raise ImportError(
+                "open3d is required for ICP registration. "
+                "Install it with: pip install open3d"
+            )
         init = (
             initial_transform
             if initial_transform is not None

@@ -9,18 +9,31 @@ successive LiDAR scans using ICP-based odometry.  It operates in two modes:
   incrementally.
 - **Offline / batch mode** – processes a list of numpy arrays in order.
 
-The map can be saved and loaded in PCD or PLY format via Open3D.
+IMU-aided registration
+~~~~~~~~~~~~~~~~~~~~~~
+Pass an :class:`~lidar_mapping.mapping.imu_preintegrator.IMUPreintegrator`
+to the constructor to improve ICP convergence using gyroscope / accelerometer
+pre-integrated motion estimates between scans::
 
-Usage::
-
+    from lidar_mapping.sensors.imu import MPU9250Driver
+    from lidar_mapping.mapping.imu_preintegrator import IMUPreintegrator
     from lidar_mapping.mapping.mapper import Mapper
 
-    mapper = Mapper(voxel_size=0.1)
-    for frame in frames:
-        pts = frame.to_numpy()[:, :3]
-        mapper.add_scan(pts)
+    imu = MPU9250Driver(i2c_bus=1)
+    imu.start()
 
-    mapper.save_map("output/map.pcd")
+    preint = IMUPreintegrator()
+    mapper = Mapper(voxel_size=0.1, imu_preintegrator=preint)
+
+    while capturing:
+        # Push IMU readings accumulated since last scan
+        while imu.readings_available():
+            reading = imu.get_reading(timeout=0)
+            if reading:
+                preint.push(reading)
+        mapper.add_scan(lidar_frame.to_numpy())
+
+The map can be saved and loaded in PCD or PLY format via Open3D.
 """
 
 from __future__ import annotations
@@ -54,6 +67,17 @@ from lidar_mapping.utils.transforms import apply_transform, compose_transforms
 
 logger = logging.getLogger(__name__)
 
+# Lazily imported to avoid hard dependency at module load time
+_IMUPreintegrator = None
+
+
+def _get_preintegrator_class():
+    global _IMUPreintegrator
+    if _IMUPreintegrator is None:
+        from lidar_mapping.mapping.imu_preintegrator import IMUPreintegrator  # noqa: PLC0415
+        _IMUPreintegrator = IMUPreintegrator
+    return _IMUPreintegrator
+
 
 class Mapper:
     """
@@ -76,6 +100,12 @@ class Mapper:
     max_map_points:
         If the accumulated map exceeds this count the map is voxel-
         downsampled to keep memory usage bounded.
+    imu_preintegrator:
+        Optional :class:`~lidar_mapping.mapping.imu_preintegrator.IMUPreintegrator`
+        instance.  When provided, its :meth:`~lidar_mapping.mapping.imu_preintegrator.IMUPreintegrator.consume`
+        method is called automatically at the start of each :meth:`add_scan`
+        call to obtain a rotation hint for ICP.  Any explicit *transform_hint*
+        passed to :meth:`add_scan` takes precedence over the IMU hint.
     """
 
     def __init__(
@@ -88,6 +118,7 @@ class Mapper:
         remove_ground: bool = False,
         icp_max_correspondence_distance: Optional[float] = None,
         max_map_points: int = 2_000_000,
+        imu_preintegrator=None,
     ) -> None:
         self._voxel = voxel_size
         self._min_range = min_range
@@ -96,6 +127,7 @@ class Mapper:
         self._z_max = z_max
         self._remove_ground = remove_ground
         self._max_map = max_map_points
+        self._preintegrator = imu_preintegrator
 
         self._icp = ICPRegistration(
             voxel_size=voxel_size,
@@ -146,9 +178,11 @@ class Mapper:
         points:
             (N, 3+) array of 3-D points in the *sensor frame*.
         transform_hint:
-            (4, 4) initial transform guess for ICP (e.g. from IMU or wheel
-            odometry).  If ``None``, the identity (or last registered pose)
-            is used.
+            (4, 4) initial transform guess for ICP (e.g. from wheel odometry
+            or an external source).  If ``None`` *and* an
+            ``imu_preintegrator`` was supplied to the constructor, the
+            preintegrator's buffered rotation is consumed automatically.
+            Explicit hints always take precedence over the IMU hint.
 
         Returns
         -------
@@ -156,6 +190,12 @@ class Mapper:
         """
         t0 = time.monotonic()
         pts = self._preprocess(points)
+
+        # Resolve ICP initial-guess hint
+        if transform_hint is None and self._preintegrator is not None:
+            transform_hint = self._preintegrator.consume()
+            if np.allclose(transform_hint, np.eye(4)):
+                transform_hint = None  # no useful hint yet
 
         result = RegistrationResult(
             transform=np.eye(4, dtype=np.float64), converged=True
