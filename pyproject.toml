@@ -1,0 +1,24 @@
+[project]
+name = "lidar-mapping"
+version = "0.1.0"
+description = "VLP-16 + IMU + Camera fusion mapping on Orange Pi 5"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.23",
+    "opencv-python>=4.8",
+    "pyserial>=3.5",
+    "scipy>=1.10",
+    "vispy>=0.14",
+    "glfw>=2.6",
+    "Pillow>=10",
+    "Flask>=3.0",
+    "PyYAML>=6.0",
+    "open3d>=0.18; platform_machine != 'aarch64'",
+]
+
+[project.optional-dependencies]
+i2c = ["smbus2>=0.4"]
+dev = ["pytest>=7"]
+
+[tool.setuptools.packages.find]
+include = ["lidar_mapping*"]

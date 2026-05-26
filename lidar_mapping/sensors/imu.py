@@ -1132,3 +1132,143 @@ class SerialAHRSDriver(BaseIMUDriver):
             sleep_time = period - elapsed
             if sleep_time > 0:
                 time.sleep(sleep_time)
+
+# ---------------------------------------------------------------------------
+# WitMotion UART Driver
+# ---------------------------------------------------------------------------
+
+class WitMotionDriver:
+    """
+    Parser for WTGAHRS2 and similar WitMotion UART IMUs using the 0x55 protocol.
+    Outputs native fused angles (Roll, Pitch, Yaw) directly from the device DSP.
+    """
+    import math
+
+    def __init__(self, port="/dev/ttyS1", baudrate=230400, max_queue=200):
+        self.port = port
+        self.baudrate = baudrate
+        self.max_queue = max_queue
+        self._running = False
+        self._thread = None
+        self._lock = threading.Lock()
+        self._readings = []
+        self.samples_read = 0
+        
+        # Intermediate state
+        self._last_accel = np.zeros(3)
+        self._last_gyro = np.zeros(3)
+        self._last_angle = np.zeros(3)
+        
+    def start(self):
+        if self._running: return
+        try:
+            import serial
+            self._ser = serial.Serial(self.port, self.baudrate, timeout=1.0)
+        except ImportError:
+            raise RuntimeError("pyserial is required")
+        self._running = True
+        self._thread = threading.Thread(target=self._read_loop, daemon=True)
+        self._thread.start()
+        logger.info(f"WitMotion IMU started on {self.port} at {self.baudrate}")
+
+    def stop(self):
+        self._running = False
+        if self._thread:
+            self._thread.join(timeout=2.0)
+            self._thread = None
+        if hasattr(self, '_ser') and self._ser.is_open:
+            self._ser.close()
+
+    def get_latest_reading(self) -> Optional[IMUReading]:
+        with self._lock:
+            if self._readings:
+                r = self._readings[-1]
+                self._readings.clear()
+                return r
+        return None
+
+    def _euler_to_quat(self, r, p, y):
+        # r, p, y in degrees
+        import math
+        r_rad = math.radians(r)
+        p_rad = math.radians(p)
+        y_rad = math.radians(y)
+        
+        cr = math.cos(r_rad * 0.5)
+        sr = math.sin(r_rad * 0.5)
+        cp = math.cos(p_rad * 0.5)
+        sp = math.sin(p_rad * 0.5)
+        cy = math.cos(y_rad * 0.5)
+        sy = math.sin(y_rad * 0.5)
+        
+        q_w = cr * cp * cy + sr * sp * sy
+        q_x = sr * cp * cy - cr * sp * sy
+        q_y = cr * sp * cy + sr * cp * sy
+        q_z = cr * cp * sy - sr * sp * cy
+        return np.array([q_w, q_x, q_y, q_z])
+
+    def _read_loop(self):
+        buffer = bytearray()
+        while self._running:
+            try:
+                if self._ser.in_waiting:
+                    buffer.extend(self._ser.read(self._ser.in_waiting))
+                else:
+                    d = self._ser.read(11)
+                    if d: buffer.extend(d)
+                
+                while len(buffer) >= 11:
+                    if buffer[0] != 0x55:
+                        buffer.pop(0)
+                        continue
+                    
+                    packet = buffer[:11]
+                    checksum = sum(packet[:10]) & 0xFF
+                    if checksum != packet[10]:
+                        buffer.pop(0)
+                        continue
+                        
+                    ptype = packet[1]
+                    updated = False
+                    
+                    if ptype == 0x51: # Accel (g -> m/s2)
+                        ax = int.from_bytes(packet[2:4], 'little', signed=True) / 32768.0 * 16 * 9.81
+                        ay = int.from_bytes(packet[4:6], 'little', signed=True) / 32768.0 * 16 * 9.81
+                        az = int.from_bytes(packet[6:8], 'little', signed=True) / 32768.0 * 16 * 9.81
+                        self._last_accel = np.array([ax, ay, az])
+                        
+                    elif ptype == 0x52: # Gyro (deg/s -> rad/s)
+                        import math
+                        gx = int.from_bytes(packet[2:4], 'little', signed=True) / 32768.0 * 2000 * (math.pi/180.0)
+                        gy = int.from_bytes(packet[4:6], 'little', signed=True) / 32768.0 * 2000 * (math.pi/180.0)
+                        gz = int.from_bytes(packet[6:8], 'little', signed=True) / 32768.0 * 2000 * (math.pi/180.0)
+                        self._last_gyro = np.array([gx, gy, gz])
+                        
+                    elif ptype == 0x53: # Angle (deg)
+                        r = int.from_bytes(packet[2:4], 'little', signed=True) / 32768.0 * 180
+                        p = int.from_bytes(packet[4:6], 'little', signed=True) / 32768.0 * 180
+                        y = int.from_bytes(packet[6:8], 'little', signed=True) / 32768.0 * 180
+                        self._last_angle = np.array([r, p, y])
+                        updated = True  # Emit reading on Angle packet, which usually comes last
+                    
+                    buffer = buffer[11:]
+                    
+                    if updated:
+                        reading = IMUReading(
+                            timestamp=time.monotonic(),
+                            accel_mss=self._last_accel.copy(),
+                            gyro_rads=self._last_gyro.copy(),
+                            roll_deg=self._last_angle[0],
+                            pitch_deg=self._last_angle[1],
+                            yaw_deg=self._last_angle[2],
+                            quaternion=self._euler_to_quat(*self._last_angle)
+                        )
+                        with self._lock:
+                            self._readings.append(reading)
+                            if len(self._readings) > self.max_queue:
+                                self._readings.pop(0)
+                        self.samples_read += 1
+                        
+            except Exception as e:
+                import time
+                time.sleep(0.1)
