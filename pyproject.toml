@@ -5,6 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "lidar-mapping"
 version = "0.1.0"
+<<<<<<< HEAD
 description = "VLP-16 / IMU / Pi-Camera 3D terrain mapping toolkit"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -29,6 +30,26 @@ lidar-ui = "lidar_mapping.ui.dashboard:main"
 lidar-mount = "lidar_mapping.cli.mount:main"
 lidar-hbx-inject = "lidar_mapping.cli.hbx_inject:main"
 lidar-hbx-calibrate = "lidar_mapping.cli.hbx_calibrate:main"
+=======
+description = "VLP-16 + IMU + Camera fusion mapping on Orange Pi 5"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.23",
+    "opencv-python>=4.8",
+    "pyserial>=3.5",
+    "scipy>=1.10",
+    "vispy>=0.14",
+    "glfw>=2.6",
+    "Pillow>=10",
+    "Flask>=3.0",
+    "PyYAML>=6.0",
+    "open3d>=0.18; platform_machine != 'aarch64'",
+]
+
+[project.optional-dependencies]
+i2c = ["smbus2>=0.4"]
+dev = ["pytest>=7"]
+>>>>>>> origin/main
 
 [tool.setuptools.packages.find]
 include = ["lidar_mapping*"]

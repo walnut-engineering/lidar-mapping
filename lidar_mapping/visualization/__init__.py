@@ -1,5 +1,6 @@
 """Visualisation package."""
 
+<<<<<<< HEAD
 from lidar_mapping.visualization.viewer import (
     create_colored_cloud,
     save_screenshot,
@@ -13,4 +14,9 @@ __all__ = [
     "show_map_with_trajectory",
     "show_point_cloud",
 ]
+=======
+from .viewer import LivePointCloudViewer
+
+__all__ = ["LivePointCloudViewer"]
+>>>>>>> origin/main
 

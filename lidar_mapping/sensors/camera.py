@@ -44,7 +44,18 @@ class CameraFrame:
     image: np.ndarray       # (H, W, 3) uint8 BGR array
     timestamp: float        # monotonic capture time (seconds)
     frame_index: int        # sequential frame counter
+    camera_id: int          # Index/ID of the camera that produced it
 
+def create_gstreamer_pipeline(video_node: int, width: int = 1920, height: int = 1080, fps: int = 30) -> str:
+    """
+    Generate a GStreamer pipeline string for reading V4L2 MIPI CSI cameras on Orange Pi 5.
+    Converts directly to BGR format needed by OpenCV.
+    """
+    return (
+        f"v4l2src device=/dev/video{video_node} ! "
+        f"video/x-raw, width={width}, height={height}, framerate={fps}/1 ! "
+        f"videoconvert ! appsink"
+    )
 
 class CameraCapture:
     """
@@ -105,7 +116,11 @@ class CameraCapture:
         """Open the camera and start the capture thread."""
         if self._running:
             return
-        self._cap = cv2.VideoCapture(self._device_index)
+            
+        # Parse if we provided a GStreamer pipeline string
+        backend = cv2.CAP_GSTREAMER if isinstance(self._device_index, str) and 'v4l2src' in self._device_index else cv2.CAP_ANY
+        self._cap = cv2.VideoCapture(self._device_index, backend)
+        
         if not self._cap.isOpened():
             raise RuntimeError(
                 f"Failed to open camera device {self._device_index!r}"
@@ -194,10 +209,15 @@ class CameraCapture:
                 continue
             ts = time.monotonic()
             self._frame_counter += 1
+            
+            # Identify the camera source if it's an integer
+            cam_id = self._device_index if isinstance(self._device_index, int) else hash(self._device_index) % 1000
+
             frame = CameraFrame(
                 image=img,
                 timestamp=ts,
                 frame_index=self._frame_counter,
+                camera_id=cam_id
             )
             with self._lock:
                 self._frames.append(frame)
@@ -205,3 +225,55 @@ class CameraCapture:
                     self._frames.pop(0)
                     self.frames_dropped += 1
             self.frames_captured += 1
+
+class MultiCameraDriver:
+    """
+    Synchronized multiple-camera capture driver.
+    
+    Reads from multiple CameraCapture instances in parallel threaded loops
+    and aligns the frames based on their monotonic timestamps.
+    """
+    def __init__(self, camera_configs: list[dict], max_sync_delay: float = 0.05) -> None:
+        """
+        camera_configs: A list of dicts outlining args for CameraCapture.
+                        e.g., [{'device_index': 0}, {'device_index': 1}]
+        max_sync_delay: Maximum allowed time delta (seconds) to consider frames "synchronized".
+        """
+        self.cameras = [CameraCapture(**cfg) for cfg in camera_configs]
+        self.max_sync_delay = max_sync_delay
+        self._running = False
+        
+    def start(self) -> None:
+        for cam in self.cameras:
+            cam.start()
+        self._running = True
+        
+    def stop(self) -> None:
+        self._running = False
+        for cam in self.cameras:
+            cam.stop()
+
+    def get_synced_frames(self, timeout: float = 1.0) -> Optional[list[CameraFrame]]:
+        """
+        Blocks until a set of synchronized frames is available from all cameras.
+        Returns a list of CameraFrame objects, matching the order in `camera_configs`.
+        """
+        deadline = time.monotonic() + timeout
+        
+        while time.monotonic() < deadline:
+            frames = []
+            # Grab latest frames
+            for cam in self.cameras:
+                frm = cam.get_latest_frame()
+                if frm is not None:
+                    frames.append(frm)
+                    
+            if len(frames) == len(self.cameras):
+                # Verify synchronization
+                timestamps = [frm.timestamp for frm in frames]
+                max_diff = max(timestamps) - min(timestamps)
+                if max_diff <= self.max_sync_delay:
+                    return frames
+            
+            time.sleep(0.01)
+        return None

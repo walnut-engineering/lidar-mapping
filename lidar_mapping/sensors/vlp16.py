@@ -61,7 +61,7 @@ _SINGLE_FIRING_US: float = 2.304  # single laser firing duration
 _DISTANCE_RESOLUTION: float = 0.002  # 2 mm per LSB
 
 # Block header magic word
-_BLOCK_FLAG: int = 0xFFEE
+_BLOCK_FLAG: int = 0xEEFF
 
 
 # ---------------------------------------------------------------------------
