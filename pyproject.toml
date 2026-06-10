@@ -5,34 +5,10 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "lidar-mapping"
 version = "0.1.0"
-<<<<<<< HEAD
-description = "VLP-16 / IMU / Pi-Camera 3D terrain mapping toolkit"
+description = "VLP-16 + IMU + Camera fusion mapping on Orange Pi 5 / VLP-16 / IMU / Pi-Camera 3D terrain mapping toolkit"
 readme = "README.md"
 requires-python = ">=3.10"
 authors = [{ name = "walnut-engineering" }]
-dependencies = [
-    "numpy>=1.24",
-    "open3d>=0.18",
-]
-
-[project.optional-dependencies]
-imu-i2c = ["smbus2>=0.4"]
-imu-serial = ["pyserial>=3.5"]
-camera = ["opencv-python>=4.8"]
-yaml = ["PyYAML>=6.0"]
-dev = ["pytest>=8.0"]
-
-[project.scripts]
-lidar-record = "lidar_mapping.cli.record:main"
-lidar-playback = "lidar_mapping.cli.playback:main"
-lidar-map = "lidar_mapping.cli.map:main"
-lidar-ui = "lidar_mapping.ui.dashboard:main"
-lidar-mount = "lidar_mapping.cli.mount:main"
-lidar-hbx-inject = "lidar_mapping.cli.hbx_inject:main"
-lidar-hbx-calibrate = "lidar_mapping.cli.hbx_calibrate:main"
-=======
-description = "VLP-16 + IMU + Camera fusion mapping on Orange Pi 5"
-requires-python = ">=3.10"
 dependencies = [
     "numpy>=1.23",
     "opencv-python>=4.8",
@@ -48,8 +24,20 @@ dependencies = [
 
 [project.optional-dependencies]
 i2c = ["smbus2>=0.4"]
+imu-i2c = ["smbus2>=0.4"]
+imu-serial = ["pyserial>=3.5"]
+camera = ["opencv-python>=4.8"]
+yaml = ["PyYAML>=6.0"]
 dev = ["pytest>=7"]
->>>>>>> origin/main
+
+[project.scripts]
+lidar-record = "lidar_mapping.cli.record:main"
+lidar-playback = "lidar_mapping.cli.playback:main"
+lidar-map = "lidar_mapping.cli.map:main"
+lidar-ui = "lidar_mapping.ui.dashboard:main"
+lidar-mount = "lidar_mapping.cli.mount:main"
+lidar-hbx-inject = "lidar_mapping.cli.hbx_inject:main"
+lidar-hbx-calibrate = "lidar_mapping.cli.hbx_calibrate:main"
 
 [tool.setuptools.packages.find]
 include = ["lidar_mapping*"]

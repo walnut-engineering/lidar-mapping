@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 """
 Point cloud and map visualisation helpers.
 
@@ -29,6 +28,14 @@ try:
     _O3D_AVAILABLE = True
 except ImportError:  # pragma: no cover
     _O3D_AVAILABLE = False
+
+try:
+    from vispy import scene, app
+    _VISPY_AVAILABLE = True
+except ImportError:
+    scene = None
+    app = None
+    _VISPY_AVAILABLE = False
 
 
 def _require_o3d() -> None:
@@ -255,14 +262,11 @@ def save_screenshot(
 
     img = renderer.render_to_image()
     o3d.io.write_image(str(path), img)
-=======
-import numpy as np
 
-try:
-    from vispy import scene, app
-except ImportError:
-    scene = None
-    app = None
+
+# ---------------------------------------------------------------------------
+# VisPy Live Viewer
+# ---------------------------------------------------------------------------
 
 class LivePointCloudViewer:
     """
@@ -273,7 +277,7 @@ class LivePointCloudViewer:
     """
     
     def __init__(self, title: str = "Live Point Cloud", width: int = 1280, height: int = 720):
-        if scene is None:
+        if not _VISPY_AVAILABLE:
             raise ImportError("vispy is required for the viewer. Install it with: pip install vispy glfw")
             
         self.canvas = scene.SceneCanvas(keys='interactive', show=True, size=(width, height), title=title)
@@ -348,4 +352,3 @@ class LivePointCloudViewer:
         """Start the visualization loop."""
         self.timer.start()
         app.run()
->>>>>>> origin/main
