@@ -45,9 +45,16 @@ def _placeholder(width: int, height: int, message: str) -> bytes:
 
 def camera_png(state: FusionState, prefer_overlay: bool = True) -> bytes:
     with state.lock:
-        bgr = state.latest_camera_overlay_bgr if prefer_overlay else None
-        if bgr is None:
-            bgr = state.latest_camera_bgr
+        raw = state.latest_camera_bgr
+        overlay = state.latest_camera_overlay_bgr if prefer_overlay else None
+        # In dual-camera mode raw may be a stitched panorama while overlay is
+        # from the primary camera only; prefer overlay only when dimensions match.
+        if overlay is not None and raw is not None and overlay.shape == raw.shape:
+            bgr = overlay
+        elif raw is not None:
+            bgr = raw
+        else:
+            bgr = overlay
         if bgr is None:
             return _placeholder(640, 480, "no camera frame yet")
         rgb = bgr[..., ::-1].copy()  # BGR -> RGB

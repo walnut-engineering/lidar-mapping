@@ -89,7 +89,7 @@ def main() -> int:
                    help="Polling rate for /imu")
     p.add_argument("--csv", type=str, default=None,
                    help="Optional CSV path for raw samples")
-    p.add_argument("--snapshots-dir", type=str, default="/tmp/rotation_test",
+    p.add_argument("--snapshots-dir", type=str, default=None,
                    help="Where before/after top-down PNGs are written")
     p.add_argument("--snapshot-range", type=float, default=10.0,
                    help="Top-down view range (m) passed to /snapshot/top_down")
@@ -98,7 +98,10 @@ def main() -> int:
     args = p.parse_args()
 
     base = f"http://{args.host}:{args.port}"
-    snap_dir = Path(args.snapshots_dir)
+    if args.snapshots_dir is None:
+        snap_dir = Path(__file__).resolve().parents[1] / "rotation_test_captures"
+    else:
+        snap_dir = Path(args.snapshots_dir)
     snap_dir.mkdir(parents=True, exist_ok=True)
 
     # Sanity check
@@ -197,7 +200,7 @@ def main() -> int:
         print(f"  error (gyro)         : {err_gyro_pct:5.2f}%   -> {'PASS' if err_gyro_pct <= args.tolerance else 'FAIL'}")
         if err_fit_pct > args.tolerance and err_gyro_pct > args.tolerance:
             rc = 1
-    print(f"  snapshots            : {snap_dir}/")
+    print(f"  snapshots            : {snap_dir.resolve()}/")
     return rc
 
 

@@ -27,6 +27,19 @@ class SensorRates:
 
 
 @dataclass
+class LoopConstraint:
+    """A detected and verified loop closure between two poses."""
+    
+    keyframe_id_a: int
+    keyframe_id_b: int
+    transform: np.ndarray  # 4x4 relative pose (B from A)
+    match_count: int
+    inlier_count: int
+    confidence: float
+    timestamp: float = field(default_factory=time.time)
+
+
+@dataclass
 class FusionState:
     """Snapshot of the live pipeline. All fields are intentionally
     independent so partial updates from different threads remain coherent."""
@@ -51,6 +64,10 @@ class FusionState:
     # Maps & frames
     map_points_count: int = 0
     keyframe_count: int = 0
+    loop_constraint_count: int = 0
+    loop_constraints: Deque[LoopConstraint] = field(
+        default_factory=lambda: deque(maxlen=1000)
+    )
     latest_cloud: Optional[np.ndarray] = None  # (N,4) most recent LiDAR frame
     latest_camera_bgr: Optional[np.ndarray] = None  # raw BGR
     latest_camera_overlay_bgr: Optional[np.ndarray] = None  # debug overlay
