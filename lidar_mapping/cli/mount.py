@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import time
 from dataclasses import dataclass
 from typing import Iterable, Optional, Sequence
@@ -279,8 +280,9 @@ def read_ioptron_status(port: str, baudrate: int, timeout: float = 0.5) -> Mount
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
+    default_port = "COM36" if os.name == "nt" else "/dev/ttyUSB0"
     parser = argparse.ArgumentParser(prog="lidar-mount")
-    parser.add_argument("--port", default="COM36", help="Serial port to test")
+    parser.add_argument("--port", default=default_port, help="Serial port to test")
     parser.add_argument("--log-level", default="INFO")
 
     subparsers = parser.add_subparsers(dest="command", required=True)
