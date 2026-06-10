@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "lidar-mapping"
 version = "0.1.0"
-description = "VLP-16 + IMU + Camera fusion mapping on Orange Pi 5 / VLP-16 / IMU / Pi-Camera 3D terrain mapping toolkit"
+description = "VLP-16 + IMU + Camera fusion mapping and 3D terrain mapping toolkit"
 readme = "README.md"
 requires-python = ">=3.10"
 authors = [{ name = "walnut-engineering" }]
