@@ -1,0 +1,37 @@
+[Unit]
+Description=LiDAR Mapping Kit (VLP-16 / WTGAHRS2 / Pi Camera + touchscreen UI)
+Documentation=https://github.com/walnut-engineering/lidar-mapping
+After=network-online.target multi-user.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+Group=pi
+WorkingDirectory=/opt/lidar-mapping
+
+# Run the touchscreen dashboard on the Pi's local display.
+Environment=DISPLAY=:0
+Environment=XAUTHORITY=/home/pi/.Xauthority
+Environment=PYTHONUNBUFFERED=1
+
+# Use the project's virtualenv interpreter.
+ExecStart=/opt/lidar-mapping/.venv/bin/lidar-ui --fullscreen --config /etc/lidar-mapping/kit.toml
+
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=10
+
+# Hardening (relax if your driver needs more access)
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=read-only
+ReadWritePaths=/var/lib/lidar-mapping /home/pi/maps
+
+# VLP-16 uses raw UDP on 2368/2369; WitMotion uses /dev/ttyUSB*.
+# Camera and I2C need supplementary groups.
+SupplementaryGroups=dialout video i2c gpio
+
+[Install]
+WantedBy=graphical.target

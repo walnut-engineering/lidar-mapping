@@ -16,6 +16,8 @@ Serial / USB AHRS (Windows and Linux)
     - Any device that outputs ``$PASHR`` NMEA sentences or a simple
       ``CSV: accel_x, accel_y, accel_z, gyro_x, gyro_y, gyro_z [, mag_x, mag_y, mag_z]``
       at configurable baud rate.
+    - **WitMotion WTGAHRS2** / JY901 / WT901 — standard WitMotion binary
+      protocol (11-byte fixed frames, on-chip Kalman quaternion output)
 
 All drivers run a background thread and expose a common
 :meth:`~BaseIMUDriver.get_reading` interface that returns an
@@ -1132,3 +1134,362 @@ class SerialAHRSDriver(BaseIMUDriver):
             sleep_time = period - elapsed
             if sleep_time > 0:
                 time.sleep(sleep_time)
+
+
+# ---------------------------------------------------------------------------
+# WitMotion binary serial driver  (WTGAHRS2 and JY901/WT901 family)
+# ---------------------------------------------------------------------------
+
+# Packet type identifiers
+_WIT_TYPE_ACC   = 0x51  # Accelerometer + temperature
+_WIT_TYPE_GYRO  = 0x52  # Gyroscope
+_WIT_TYPE_ANGLE = 0x53  # Euler angles (roll / pitch / yaw)
+_WIT_TYPE_MAG   = 0x54  # Magnetometer
+_WIT_TYPE_QUAT  = 0x59  # Quaternion (W, X, Y, Z)
+
+# Scale constants (from WitMotion SDK / REG.h)
+_WIT_ACC_SCALE  = 16.0 * 9.80665 / 32768.0   # LSB → m/s²  (±16 g range)
+_WIT_GYRO_SCALE = 2000.0 / 32768.0 * (3.14159265358979 / 180.0)  # LSB → rad/s
+_WIT_ANG_SCALE  = 180.0 / 32768.0             # LSB → degrees
+_WIT_QUAT_SCALE = 1.0 / 32768.0               # LSB → unit quaternion component
+
+# Register addresses for config commands
+_WIT_REG_RSW    = 0x02  # Output content flags
+_WIT_REG_RRATE  = 0x03  # Output rate
+_WIT_REG_BAUD   = 0x04  # Baud rate index
+_WIT_REG_SAVE   = 0x00  # Write 0x00 to save; 0x01 to reboot
+
+
+class WitMotionDriver(BaseIMUDriver):
+    """
+    Serial driver for WitMotion WTGAHRS2 and compatible devices
+    (JY901, WT901, WT61, etc.) using the WitMotion standard binary protocol.
+
+    The device streams fixed 11-byte binary frames over UART::
+
+        [0x55] [type] [D0L D0H D1L D1H D2L D2H D3L D3H] [checksum]
+
+    The checksum is ``sum(frame[0:10]) & 0xFF``.
+
+    Packet types output by default:
+
+    * ``0x51`` — accelerometer X/Y/Z + temperature
+    * ``0x52`` — gyroscope X/Y/Z
+    * ``0x53`` — Euler angles roll/pitch/yaw
+    * ``0x54`` — magnetometer X/Y/Z
+    * ``0x59`` — on-chip Kalman quaternion W/X/Y/Z
+
+    An :class:`IMUReading` is emitted each time a quaternion (``0x59``) packet
+    arrives.  The accelerometer, gyroscope and magnetometer values from the
+    most-recent preceding packets are included automatically.
+
+    .. note::
+        The device ships at **9600 baud**.  At 100 Hz with five packet types
+        this requires ≥ 55,000 bits/s — call :meth:`set_baud_rate` once to
+        switch to 115200 baud before running at high rates.
+
+    Parameters
+    ----------
+    port:
+        Serial port name (e.g. ``"COM3"`` on Windows, ``"/dev/ttyUSB0"``
+        on Linux / Raspberry Pi).
+    baudrate:
+        Serial baud rate.  Must match the device configuration.
+    sample_rate:
+        Nominal sample rate in Hz.
+    timeout:
+        Serial read timeout in seconds.
+
+    Usage::
+
+        from lidar_mapping.sensors.imu import WitMotionDriver
+
+        imu = WitMotionDriver(port="/dev/ttyUSB0", baudrate=115200)
+        imu.start()
+        reading = imu.get_reading(timeout=1.0)
+        print(f"Roll={reading.roll_deg:.1f}°  Quat={reading.quaternion}")
+        imu.stop()
+    """
+
+    # Baud rate index table (reg 0x04 value → baud rate)
+    _BAUD_TABLE = {
+        2400:   0,
+        4800:   1,
+        9600:   2,
+        19200:  3,
+        38400:  4,
+        57600:  5,
+        115200: 6,
+        230400: 7,
+        460800: 8,
+        921600: 9,
+    }
+
+    # Output rate index table (reg 0x03 value → Hz)
+    _RATE_TABLE = {
+        0.1: 0x01,
+        0.5: 0x02,
+        1:   0x03,
+        2:   0x04,
+        5:   0x05,
+        10:  0x06,
+        20:  0x07,
+        50:  0x08,
+        100: 0x09,
+        125: 0x0A,
+        200: 0x0B,
+    }
+
+    def __init__(
+        self,
+        port: str = "/dev/ttyUSB0",
+        baudrate: int = 9600,
+        sample_rate: float = 100.0,
+        timeout: float = 1.0,
+        **kwargs,
+    ) -> None:
+        super().__init__(sample_rate=sample_rate, **kwargs)
+        if not _SERIAL_AVAILABLE:
+            raise ImportError(
+                "pyserial is required for WitMotionDriver. "
+                "Install it with: pip install pyserial"
+            )
+        self._port = port
+        self._baudrate = baudrate
+        self._timeout = timeout
+        self._serial = None
+
+        # Packet cache — accumulate partial data between packet types
+        self._cache_accel: np.ndarray = np.zeros(3, dtype=np.float64)
+        self._cache_gyro:  np.ndarray = np.zeros(3, dtype=np.float64)
+        self._cache_mag:   Optional[np.ndarray] = None
+        self._cache_euler: Optional[tuple] = None  # (roll, pitch, yaw) degrees
+        self._cache_temp:  Optional[float] = None
+
+    # ------------------------------------------------------------------
+    # BaseIMUDriver interface
+    # ------------------------------------------------------------------
+
+    def _open(self) -> None:
+        import serial as pyserial
+
+        self._serial = pyserial.Serial(
+            self._port,
+            baudrate=self._baudrate,
+            timeout=self._timeout,
+        )
+        logger.debug(
+            "WitMotion device opened on %s @ %d baud.", self._port, self._baudrate
+        )
+
+    def _close(self) -> None:
+        if self._serial is not None and self._serial.is_open:
+            self._serial.close()
+        self._serial = None
+
+    def _read_raw(
+        self,
+    ) -> tuple[np.ndarray, np.ndarray, Optional[np.ndarray], Optional[float]]:
+        # Not used — WitMotionDriver overrides _sample_loop entirely
+        return self._cache_accel, self._cache_gyro, self._cache_mag, self._cache_temp
+
+    # ------------------------------------------------------------------
+    # Override sample loop — accumulate packets, emit on quaternion arrival
+    # ------------------------------------------------------------------
+
+    def _sample_loop(self) -> None:
+        assert self._serial is not None
+        buf = bytearray()
+
+        while self._running:
+            try:
+                raw = self._serial.read(1)
+            except Exception as exc:  # noqa: BLE001
+                self.read_errors += 1
+                logger.debug("WitMotion serial read error: %s", exc)
+                continue
+
+            if not raw:
+                continue
+
+            buf.extend(raw)
+
+            # Discard bytes until sync byte 0x55 is at position 0
+            while buf and buf[0] != 0x55:
+                buf.pop(0)
+
+            if len(buf) < 11:
+                continue
+
+            frame = bytes(buf[:11])
+            buf = buf[11:]
+
+            result = WitMotionDriver._parse_packet(frame)
+            if result is None:
+                # Bad checksum — remove the leading 0x55 and re-sync
+                buf = bytearray([frame[1]]) + buf
+                continue
+
+            ptype, values = result
+
+            if ptype == _WIT_TYPE_ACC:
+                self._cache_accel = np.array(
+                    [values[0] * _WIT_ACC_SCALE,
+                     values[1] * _WIT_ACC_SCALE,
+                     values[2] * _WIT_ACC_SCALE],
+                    dtype=np.float64,
+                )
+                self._cache_temp = values[3] / 100.0  # °C
+
+            elif ptype == _WIT_TYPE_GYRO:
+                self._cache_gyro = np.array(
+                    [values[0] * _WIT_GYRO_SCALE,
+                     values[1] * _WIT_GYRO_SCALE,
+                     values[2] * _WIT_GYRO_SCALE],
+                    dtype=np.float64,
+                )
+
+            elif ptype == _WIT_TYPE_ANGLE:
+                self._cache_euler = (
+                    values[0] * _WIT_ANG_SCALE,  # roll  (deg)
+                    values[1] * _WIT_ANG_SCALE,  # pitch (deg)
+                    values[2] * _WIT_ANG_SCALE,  # yaw   (deg)
+                )
+
+            elif ptype == _WIT_TYPE_MAG:
+                self._cache_mag = np.array(
+                    [float(values[0]), float(values[1]), float(values[2])],
+                    dtype=np.float64,
+                )
+
+            elif ptype == _WIT_TYPE_QUAT:
+                t_now = time.monotonic()
+                qw = values[0] * _WIT_QUAT_SCALE
+                qx = values[1] * _WIT_QUAT_SCALE
+                qy = values[2] * _WIT_QUAT_SCALE
+                qz = values[3] * _WIT_QUAT_SCALE
+                quaternion = np.array([qw, qx, qy, qz], dtype=np.float64)
+
+                norm = float(np.linalg.norm(quaternion))
+                if norm > 1e-9:
+                    quaternion /= norm
+
+                from lidar_mapping.sensors.ahrs import _quaternion_to_euler_degrees
+                if self._cache_euler is not None:
+                    roll, pitch, yaw = self._cache_euler
+                else:
+                    roll, pitch, yaw = _quaternion_to_euler_degrees(quaternion)
+
+                reading = IMUReading(
+                    timestamp=t_now,
+                    accel_mss=self._cache_accel.copy(),
+                    gyro_rads=self._cache_gyro.copy(),
+                    mag_ut=(self._cache_mag.copy()
+                            if self._cache_mag is not None else None),
+                    temperature_c=self._cache_temp,
+                    roll_deg=roll,
+                    pitch_deg=pitch,
+                    yaw_deg=yaw,
+                    quaternion=quaternion,
+                )
+
+                with self._lock:
+                    self._readings.append(reading)
+                    if len(self._readings) > self._max_queue:
+                        self._readings.pop(0)
+
+                self.samples_read += 1
+
+    # ------------------------------------------------------------------
+    # Static packet parser
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _parse_packet(frame: bytes) -> Optional[tuple[int, list[int]]]:
+        """
+        Parse a single 11-byte WitMotion frame.
+
+        Returns ``(packet_type, [v0, v1, v2, v3])`` where each value is a
+        signed 16-bit integer, or ``None`` if the checksum fails.
+        """
+        if len(frame) != 11 or frame[0] != 0x55:
+            return None
+        expected = sum(frame[:10]) & 0xFF
+        if frame[10] != expected:
+            return None
+
+        ptype = frame[1]
+        v0 = struct.unpack_from("<h", frame, 2)[0]
+        v1 = struct.unpack_from("<h", frame, 4)[0]
+        v2 = struct.unpack_from("<h", frame, 6)[0]
+        v3 = struct.unpack_from("<h", frame, 8)[0]
+        return ptype, [v0, v1, v2, v3]
+
+    # ------------------------------------------------------------------
+    # Configuration helpers (call before start() or while stopped)
+    # ------------------------------------------------------------------
+
+    def _send_register_write(self, reg: int, value: int) -> None:
+        """Send a 5-byte register-write command: 0xFF 0xAA [reg] [val_L] [val_H]."""
+        assert self._serial is not None
+        val_l = value & 0xFF
+        val_h = (value >> 8) & 0xFF
+        self._serial.write(bytes([0xFF, 0xAA, reg, val_l, val_h]))
+        time.sleep(0.01)
+
+    def set_baud_rate(self, baudrate: int) -> None:
+        """
+        Change the device baud rate and save to flash.
+
+        After calling this, close and reopen the serial port at the new rate.
+
+        Parameters
+        ----------
+        baudrate:
+            One of: 2400, 4800, 9600, 19200, 38400, 57600, 115200, 230400,
+            460800, 921600.
+        """
+        if baudrate not in self._BAUD_TABLE:
+            raise ValueError(
+                f"baudrate must be one of {sorted(self._BAUD_TABLE)}, got {baudrate}"
+            )
+        self._send_register_write(_WIT_REG_BAUD, self._BAUD_TABLE[baudrate])
+        self._send_register_write(_WIT_REG_SAVE, 0x00)
+
+    def set_output_rate(self, rate_hz: float) -> None:
+        """
+        Set the sensor output rate and save to flash.
+
+        Parameters
+        ----------
+        rate_hz:
+            One of: 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 125, 200.
+        """
+        if rate_hz not in self._RATE_TABLE:
+            raise ValueError(
+                f"rate_hz must be one of {sorted(self._RATE_TABLE)}, got {rate_hz}"
+            )
+        self._send_register_write(_WIT_REG_RRATE, self._RATE_TABLE[rate_hz])
+        self._send_register_write(_WIT_REG_SAVE, 0x00)
+
+    def set_output_contents(self, flags: int) -> None:
+        """
+        Set which packet types the device outputs and save to flash.
+
+        Combine RSW_* flags with bitwise OR:
+
+        * ``0x002`` — acceleration (``0x51``)
+        * ``0x004`` — gyroscope (``0x52``)
+        * ``0x008`` — Euler angles (``0x53``)
+        * ``0x010`` — magnetic field (``0x54``)
+        * ``0x200`` — quaternion (``0x59``)
+
+        Default (all five types): ``0x21E``.
+
+        Parameters
+        ----------
+        flags:
+            Bitmask of RSW_* values.
+        """
+        self._send_register_write(_WIT_REG_RSW, flags)
+        self._send_register_write(_WIT_REG_SAVE, 0x00)
